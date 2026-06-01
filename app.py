@@ -5,13 +5,39 @@
 """
 import streamlit as st
 import pandas as pd
-import tempfile, os, io
+import tempfile, os, io, hashlib, hmac, time
 from collections import defaultdict
 
 # Add doctool to path
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pdf_parser import parse_pdf
+
+# ============================================================
+# 激活码系统
+# ============================================================
+SECRET = "doctool2026-v2"
+
+def verify_key(key):
+    try:
+        parts = key.strip().split("-")
+        if len(parts) != 3 or parts[0] != "DT": return False, 0
+        expiry = int(parts[1])
+        sig = parts[2]
+        expected = hmac.new(SECRET.encode(), str(expiry).encode(), hashlib.sha256).hexdigest()[:8]
+        if sig != expected: return False, 0
+        remaining = (expiry - int(time.time())) / 86400
+        return True, max(0, remaining)
+    except:
+        return False, 0
+
+# Session state for activation
+if 'activated' not in st.session_state:
+    st.session_state.activated = False
+    st.session_state.remaining_days = 0
+    st.session_state.usage_today = 0
+
+FREE_LIMIT = 20  # 免费每月比20次
 
 st.set_page_config(page_title="单据比对工具", page_icon="📋", layout="wide")
 st.title("📋 单据比对工具")
@@ -38,12 +64,41 @@ def seals_match(s1, s2):
 # ============================================================
 with st.sidebar:
     st.header("⚙️ 设置")
+
+    # 激活状态
+    if st.session_state.activated:
+        st.success(f"✅ 已激活 · 剩余 {st.session_state.remaining_days:.0f} 天")
+        if st.button("🔓 退出登录"):
+            st.session_state.activated = False
+            st.rerun()
+    else:
+        with st.expander("🔑 激活码"):
+            code = st.text_input("输入激活码", placeholder="DT-xxxxxxxxx-xxxxxxxx")
+            if st.button("激活"):
+                ok, days = verify_key(code)
+                if ok:
+                    st.session_state.activated = True
+                    st.session_state.remaining_days = days
+                    st.success(f"激活成功! 有效期 {days:.0f} 天")
+                    st.rerun()
+                else:
+                    st.error("激活码无效或已过期")
+
     st.divider()
     st.caption("支持格式:")
     st.caption("• Packing List (表格/分列)")
     st.caption("• Evergreen BL")
     st.caption("• MSC BL")
     st.caption("• 通用PDF")
+    st.divider()
+
+    if not st.session_state.activated:
+        st.caption("🔓 免费版: 每月20次比对")
+        st.caption("🔐 专业版: 无限次数")
+        st.caption("📱 加微信开通: 添哥")
+    else:
+        st.caption("🔐 专业版: 无限次数")
+
     st.divider()
     st.caption("封号自动匹配: FX前缀忽略, 7位/8位智能比对")
 
@@ -62,6 +117,11 @@ if not files:
 
 if len(files) < 2:
     st.warning("请上传至少 2 个文件")
+    st.stop()
+
+# 免费版限制
+if not st.session_state.activated and st.session_state.usage_today >= FREE_LIMIT:
+    st.warning(f"🔓 免费版每月 {FREE_LIMIT} 次，已达上限。输入激活码解锁无限使用。")
     st.stop()
 
 # ============================================================
@@ -295,6 +355,10 @@ if partial_rows:
 
 if not mismatch_rows and not partial_rows:
     st.success(f"✅ 所有 {len(all_keys)} 个集装箱 — Container No 和 Seal No 完全一致！")
+
+# 记录使用
+if not st.session_state.activated:
+    st.session_state.usage_today += 1
 
 # ============================================================
 # Export
